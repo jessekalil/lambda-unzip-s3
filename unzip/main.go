@@ -18,6 +18,8 @@ import (
 var (
 	svc *s3.S3
 
+	InvalidFileOuputKey = "/invalid"
+
 	MaxZipSize     int64  = 1024 * 1024 * 100 // 100MB
 	MaxExtractSize uint64 = 1024 * 1024 * 500 // 500MB
 	MaxFileCount   int    = 10000
@@ -28,20 +30,44 @@ func init() {
 	svc = s3.New(session)
 }
 
+func DeleteObject(context context.Context, bucket, key *string) error {
+	_, err := svc.DeleteObjectWithContext(context, &s3.DeleteObjectInput{
+		Bucket: bucket,
+		Key:    key,
+	})
+	return err
+}
+
+func MoveObject(context context.Context, bucket, key, destBucket, destKey *string) error {
+	copySource := filepath.Join(*bucket, *key)
+	_, err := svc.CopyObjectWithContext(context, &s3.CopyObjectInput{
+		Bucket:     destBucket,
+		CopySource: &copySource,
+		Key:        destKey,
+	})
+	if err != nil {
+		return err
+	}
+	return DeleteObject(context, bucket, key)
+}
+
 func Handler(context context.Context, s3Event events.S3Event) (string, error) {
 	if len(s3Event.Records) == 0 {
 		return "", fmt.Errorf("No records in event")
 	}
 
 	record := s3Event.Records[0]
-
-	// for _, record := range s3Event.Records {
 	s3Oject := record.S3.Object
 	key := s3Oject.Key
 	outputFolder := strings.TrimSuffix(key, filepath.Ext(key))
 
 	if s3Oject.Size > MaxZipSize {
-		return "", fmt.Errorf("File size too large: %d", s3Oject.Size)
+		sizeError := fmt.Errorf("File size too large: %d", s3Oject.Size)
+		if err := MoveObject(context, &record.S3.Bucket.Name, &record.S3.Object.Key, &record.S3.Bucket.Name,
+			&InvalidFileOuputKey); err != nil {
+			return "", fmt.Errorf("%s\nError moving object: %s", sizeError, err)
+		}
+		return "", sizeError
 	}
 	getObjectInput := &s3.GetObjectInput{
 		Bucket: &record.S3.Bucket.Name,
@@ -85,7 +111,7 @@ func Handler(context context.Context, s3Event events.S3Event) (string, error) {
 		}
 		reader := bytes.NewReader(fileData)
 		outputKey := filepath.Join(outputFolder, file.Name)
-		_, err = svc.PutObject(&s3.PutObjectInput{
+		_, err = svc.PutObjectWithContext(context, &s3.PutObjectInput{
 			Bucket: &record.S3.Bucket.Name,
 			Key:    &outputKey,
 			Body:   reader,
@@ -93,7 +119,6 @@ func Handler(context context.Context, s3Event events.S3Event) (string, error) {
 		if err != nil {
 			return "", fmt.Errorf("Error putting object: %s", err)
 		}
-		// }
 	}
 
 	return "Hello from Lambda!", nil
