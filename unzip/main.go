@@ -38,10 +38,11 @@ func Handler(context context.Context, s3Event events.S3Event) (string, error) {
 	}
 	err := unzipFile.Execute(context)
 	if err != nil {
+    unzipFile.DeleteObject(context, &record.S3.Bucket.Name, &unzipFile.outpputFolder)
 		return "", err
 	}
 
-	return "Hello from Lambda!", nil
+  return fmt.Sprintf("Unzipped %s", record.S3.Object.Key), nil
 }
 
 func main() {
